@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:camera/camera.dart';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -250,75 +251,83 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
   /// consumed by ML Kit.  Adapted from the official ML Kit sample.
   /// Convierte la imagen de la cámara (YUV) a un InputImage compatible con ML Kit.
   _ConvertedCameraImage _convertCameraImage(CameraImage image, CameraDescription description) {
-    // Convert YUV420 planar to NV21 (the format ML Kit commonly accepts on
-    // Android). Many devices provide Y, U, V planes with pixelStride and
-    // bytesPerRow that must be handled correctly.
-    Uint8List bytes;
-    try {
-      final width = image.width;
-      final height = image.height;
-      final yPlane = image.planes[0];
-      final uPlane = image.planes[1];
-      final vPlane = image.planes[2];
-
-      final int frameSize = width * height;
-      final nv21 = Uint8List(frameSize + (frameSize ~/ 2));
-
-      // Copy Y plane
-      int dstIndex = 0;
-      for (int row = 0; row < height; row++) {
-        final int srcOffset = row * yPlane.bytesPerRow;
-        nv21.setRange(dstIndex, dstIndex + width, yPlane.bytes, srcOffset);
-        dstIndex += width;
-      }
-
-      // Interleave V and U (NV21 uses VU ordering)
-      final uvHeight = (height / 2).floor();
-      final uvWidth = (width / 2).floor();
-      // Estimate pixel stride for U/V planes from bytesPerRow and width.
-      // If bytesPerRow equals uvWidth, the plane is tightly packed.
-      final int uPixelStrideEstimate = (uPlane.bytesPerRow / uvWidth).round();
-      final int vPixelStrideEstimate = (vPlane.bytesPerRow / uvWidth).round();
-      for (int row = 0; row < uvHeight; row++) {
-        final int uRowStart = row * uPlane.bytesPerRow;
-        final int vRowStart = row * vPlane.bytesPerRow;
-        for (int col = 0; col < uvWidth; col++) {
-          final int uIndex = uRowStart + col * uPixelStrideEstimate;
-          final int vIndex = vRowStart + col * vPixelStrideEstimate;
-          // V then U (NV21 = VU interleaved)
-          nv21[dstIndex++] = vPlane.bytes[vIndex];
-          nv21[dstIndex++] = uPlane.bytes[uIndex];
-        }
-      }
-
-      bytes = nv21;
-    } catch (e, st) {
-      // Fallback: concatenate planes (less likely to work) and continue.
-      debugPrint('NV21 conversion failed, falling back to concatenating planes: $e\n$st');
-      final WriteBuffer allBytes = WriteBuffer();
-      for (final plane in image.planes) {
-        allBytes.putUint8List(plane.bytes);
-      }
-      bytes = allBytes.done().buffer.asUint8List();
-    }
-
+    // On Android, camera frames are typically YUV_420_888 (3 planes). On iOS,
+    // frames are typically BGRA8888 (1 plane). Convert accordingly.
     final Size imageSize = Size(image.width.toDouble(), image.height.toDouble());
     final InputImageRotation rotation =
         InputImageRotationValue.fromRawValue(description.sensorOrientation) ??
             InputImageRotation.rotation0deg;
 
-  // Formato y metadatos de los planos. We convert to NV21 above, so
-  // explicitly tell ML Kit that format.
-  final InputImageFormat format = InputImageFormat.nv21;
+    Uint8List bytes;
+    InputImageFormat format;
+    int bytesPerRow;
 
-    // Crea el InputImage con la firma usada por la versión instalada.
+    if (image.planes.length == 1) {
+      // iOS (BGRA8888) path.
+      final plane = image.planes.first;
+      bytes = plane.bytes;
+      format = InputImageFormat.bgra8888;
+      bytesPerRow = plane.bytesPerRow;
+    } else {
+      // Android (YUV420) -> NV21 path.
+      try {
+        final width = image.width;
+        final height = image.height;
+        final yPlane = image.planes[0];
+        final uPlane = image.planes[1];
+        final vPlane = image.planes[2];
+
+        final int frameSize = width * height;
+        final nv21 = Uint8List(frameSize + (frameSize ~/ 2));
+
+        // Copy Y plane
+        int dstIndex = 0;
+        for (int row = 0; row < height; row++) {
+          final int srcOffset = row * yPlane.bytesPerRow;
+          nv21.setRange(dstIndex, dstIndex + width, yPlane.bytes, srcOffset);
+          dstIndex += width;
+        }
+
+        // Interleave V and U (NV21 uses VU ordering)
+        final uvHeight = (height / 2).floor();
+        final uvWidth = (width / 2).floor();
+        // Estimate pixel stride for U/V planes from bytesPerRow and width.
+        final int uPixelStrideEstimate = (uPlane.bytesPerRow / uvWidth).round();
+        final int vPixelStrideEstimate = (vPlane.bytesPerRow / uvWidth).round();
+        for (int row = 0; row < uvHeight; row++) {
+          final int uRowStart = row * uPlane.bytesPerRow;
+          final int vRowStart = row * vPlane.bytesPerRow;
+          for (int col = 0; col < uvWidth; col++) {
+            final int uIndex = uRowStart + col * uPixelStrideEstimate;
+            final int vIndex = vRowStart + col * vPixelStrideEstimate;
+            nv21[dstIndex++] = vPlane.bytes[vIndex];
+            nv21[dstIndex++] = uPlane.bytes[uIndex];
+          }
+        }
+
+        bytes = nv21;
+        format = InputImageFormat.nv21;
+        bytesPerRow = image.planes.first.bytesPerRow;
+      } catch (e, st) {
+        // Fallback: concatenate planes and try anyway.
+        debugPrint('NV21 conversion failed, falling back to concatenating planes: $e\n$st');
+        final WriteBuffer allBytes = WriteBuffer();
+        for (final plane in image.planes) {
+          allBytes.putUint8List(plane.bytes);
+        }
+        bytes = allBytes.done().buffer.asUint8List();
+        format = InputImageFormat.nv21;
+        bytesPerRow = image.planes.first.bytesPerRow;
+      }
+    }
+
     final inputImage = InputImage.fromBytes(
       bytes: bytes,
       metadata: InputImageMetadata(
         size: imageSize,
         rotation: rotation,
         format: format,
-        bytesPerRow: image.planes.first.bytesPerRow,
+        bytesPerRow: bytesPerRow,
       ),
     );
 
