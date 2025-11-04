@@ -1,0 +1,33 @@
+name: exorehab_mvp
+description: |
+  A simple mobile prototype for the RehabTech (ExoRehab AI) project.  
+  This MVP counts repetitions of a single exercise (such as a squat or arm curl)
+  using Google's ML Kit pose detection (powered by MediaPipe) and the device
+  camera.  It draws a skeletal overlay on top of the camera feed, calculates
+  joint angles and provides textual feedback when a full repetition is
+  completed.
+version: 0.1.0+1
+environment:
+  sdk: ">=2.17.0 <3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Access to the device camera.  See https://pub.dev/packages/camera
+  camera: ^0.10.5+9
+  # Pose detection API backed by MediaPipe.  See https://pub.dev/packages/google_mlkit_pose_detection
+  google_mlkit_pose_detection: ^0.14.0
+  # Shared utility classes used by the ML Kit plugins.
+  google_mlkit_commons: 0.11.0
+  # Path utilities used by some ML Kit examples; included here for completeness.
+  path: ^1.8.3
+  path_provider: ^2.0.15
+  # Runtime permission handling for Android/iOS
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
