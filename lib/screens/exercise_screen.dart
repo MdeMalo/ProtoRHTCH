@@ -4,6 +4,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_pose_detection/google_mlkit_pose_detection.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter/services.dart' show DeviceOrientation;
 
 import '../services/pose_utils.dart';
 import '../widgets/pose_painter.dart';
@@ -49,6 +50,10 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
   int _repCount = 0;
   double? _lastAngle;
   bool _isStreaming = false;
+  // Debug overrides for rotation (degrees) and mirror. Use null to keep
+  // device-provided values. These are toggled from on-screen debug buttons.
+  int? _debugRotationDegrees;
+  bool? _debugMirror;
 
   @override
   void initState() {
@@ -63,7 +68,8 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
     final status = await Permission.camera.request();
     if (status.isGranted) {
       await _initializeCamera();
-      _noCameras = true;
+      // Mark that we do have camera(s) available after successful init.
+      _noCameras = false;
       if (mounted) setState(() {});
       return;
     }
@@ -181,6 +187,9 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
     _controller = controller;
     try {
       await controller.initialize();
+      // Lock capture orientation to reduce reconfiguration churn on some
+      // devices (e.g., MIUI) that triggers session restarts.
+      await controller.lockCaptureOrientation(DeviceOrientation.portraitUp);
   await controller.startImageStream(_processCameraImage);
   _isStreaming = true;
     } catch (e) {
@@ -367,6 +376,9 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
           jointType: _repetitionCounter.joint,
           currentAngle: _lastAngle,
           repetitionCount: _repCount,
+          // Pass debug overrides from UI
+          debugRotationDegrees: _debugRotationDegrees,
+          debugMirror: _debugMirror,
         );
         _customPaint = CustomPaint(painter: painter);
       } else {
@@ -533,6 +545,44 @@ class _ExerciseScreenState extends State<ExerciseScreen> {
               child: Icon(_isStreaming ? Icons.pause : Icons.play_arrow),
             ),
           ),
+            // Debug controls: rotate / mirror toggles to test alignment
+            Positioned(
+              bottom: 20,
+              right: 180,
+              child: FloatingActionButton(
+                heroTag: 'debugRotate',
+                backgroundColor: Colors.blueGrey,
+                onPressed: () {
+                  // Cycle through 0,90,180,270,null (null => use camera rotation)
+                  final seq = [0, 90, 180, 270, -1];
+                  final cur = _debugRotationDegrees ?? -1;
+                  final idx = seq.indexOf(cur);
+                  final next = seq[(idx + 1) % seq.length];
+                  setState(() {
+                    _debugRotationDegrees = next == -1 ? null : next;
+                  });
+                  debugPrint('[DEBUG] rotation override -> '
+                      '${_debugRotationDegrees?.toString() ?? 'auto'}');
+                },
+                child: const Icon(Icons.rotate_right),
+              ),
+            ),
+            Positioned(
+              bottom: 20,
+              right: 260,
+              child: FloatingActionButton(
+                heroTag: 'debugMirror',
+                backgroundColor: Colors.purple,
+                onPressed: () {
+                  setState(() {
+                    _debugMirror = !(_debugMirror ?? false);
+                  });
+                  debugPrint('[DEBUG] mirror override -> '
+                      '${_debugMirror == true ? 'ON' : 'OFF'}');
+                },
+                child: const Icon(Icons.flip),
+              ),
+            ),
           Positioned(
             bottom: 20,
             left: 20,

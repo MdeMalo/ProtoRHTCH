@@ -21,6 +21,8 @@ class PosePainter extends CustomPainter {
     this.jointType = PoseLandmarkType.leftKnee,
     this.currentAngle,
     this.repetitionCount = 0,
+    this.debugRotationDegrees,
+    this.debugMirror,
   });
 
   final Pose pose;
@@ -30,6 +32,10 @@ class PosePainter extends CustomPainter {
   final PoseLandmarkType jointType;
   final double? currentAngle;
   final int repetitionCount;
+  // Optional debug overrides (degrees). If null, use provided rotation.
+  final int? debugRotationDegrees;
+  // If non-null, override mirror decision (true => mirrored)
+  final bool? debugMirror;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -50,10 +56,11 @@ class PosePainter extends CustomPainter {
     final Map<PoseLandmarkType, Offset> landmarkOffsets = {};
     // Precompute translated offsets for each landmark.
     pose.landmarks.forEach((type, landmark) {
-      landmarkOffsets[type] = Offset(
-        _translateX(landmark.x, size, imageSize, rotation, cameraLensDirection),
-        _translateY(landmark.y, size, imageSize, rotation, cameraLensDirection),
-      );
+      // Determine effective rotation degrees and mirror flag from overrides.
+      final effectiveRotationDeg = debugRotationDegrees ?? _rotationDegreesFromEnum(rotation);
+      final effectiveMirror = debugMirror ?? (cameraLensDirection == CameraLensDirection.front);
+      final mapped = _mapPoint(landmark.x, landmark.y, size, imageSize, effectiveRotationDeg, effectiveMirror);
+      landmarkOffsets[type] = mapped;
     });
 
     void drawLine(PoseLandmarkType type1, PoseLandmarkType type2, Paint paint) {
@@ -76,9 +83,18 @@ class PosePainter extends CustomPainter {
     drawLine(PoseLandmarkType.rightHip, PoseLandmarkType.rightKnee, rightPaint);
     drawLine(PoseLandmarkType.rightKnee, PoseLandmarkType.rightAnkle, rightPaint);
 
-    // Draw all landmarks as small circles.
+    // Draw all landmarks as small circles (transformed)
     for (final offset in landmarkOffsets.values) {
-      canvas.drawCircle(offset, 2.0, Paint()..color = Colors.green);
+      canvas.drawCircle(offset, 3.0, Paint()..color = Colors.green);
+    }
+
+    // Also draw the raw image-space points (no rotation/mirror) in red to
+    // help debugging misalignment. Raw mapping assumes image coordinates map
+    // directly with no rotation and no mirror.
+    for (final landmark in pose.landmarks.values) {
+      final rx = (landmark.x / imageSize.width) * size.width;
+      final ry = (landmark.y / imageSize.height) * size.height;
+      canvas.drawCircle(Offset(rx, ry), 2.0, Paint()..color = Colors.red);
     }
 
     // Highlight the joint being measured.
@@ -103,52 +119,63 @@ class PosePainter extends CustomPainter {
     textPainter.layout(maxWidth: size.width - 20);
     textPainter.paint(canvas, const Offset(10, 10));
   }
-
-  /// Translate the landmark's x coordinate to the canvas coordinate system.
-  double _translateX(
+  /// Map an image-space point (x,y) into canvas coordinates taking into
+  /// account image rotation and front/back mirroring.
+  Offset _mapPoint(
     double x,
-    Size size,
+    double y,
+    Size canvasSize,
     Size imageSize,
-    InputImageRotation rotation,
-    CameraLensDirection cameraLensDirection,
+    int rotationDegrees,
+    bool mirror,
   ) {
-  final scaleX = size.width / imageSize.width;
-    double result;
-    switch (rotation) {
-      case InputImageRotation.rotation90deg:
-        result = x * scaleX;
+    // Use mapping logic aligned with ML Kit examples that accounts for
+    // rotation by swapping width/height where appropriate and then scales
+    // into the canvas. Finally, apply horizontal mirroring if requested.
+    double px, py;
+    switch (rotationDegrees % 360) {
+      case 90:
+        // Image rotated 90° clockwise.
+        // x' = y; y' = imageWidth - x
+        px = y * (canvasSize.width / imageSize.height);
+        py = (imageSize.width - x) * (canvasSize.height / imageSize.width);
         break;
-      case InputImageRotation.rotation270deg:
-        result = size.width - x * scaleX;
+      case 180:
+        // x' = imageWidth - x; y' = imageHeight - y
+        px = (imageSize.width - x) * (canvasSize.width / imageSize.width);
+        py = (imageSize.height - y) * (canvasSize.height / imageSize.height);
         break;
+      case 270:
+        // x' = imageHeight - y; y' = x
+        px = (imageSize.height - y) * (canvasSize.width / imageSize.height);
+        py = x * (canvasSize.height / imageSize.width);
+        break;
+      case 0:
       default:
-        result = x * scaleX;
+        // No rotation.
+        px = x * (canvasSize.width / imageSize.width);
+        py = y * (canvasSize.height / imageSize.height);
+        break;
     }
-    if (cameraLensDirection == CameraLensDirection.front) {
-      return size.width - result;
+
+    if (mirror) {
+      px = canvasSize.width - px;
     }
-    return result;
+    return Offset(px, py);
   }
 
-  /// Translate the landmark's y coordinate to the canvas coordinate system.
-  double _translateY(
-    double y,
-    Size size,
-    Size imageSize,
-    InputImageRotation rotation,
-    CameraLensDirection cameraLensDirection,
-  ) {
-    final scaleY = size.height / imageSize.height;
-    double result;
-    switch (rotation) {
+  int _rotationDegreesFromEnum(InputImageRotation r) {
+    switch (r) {
       case InputImageRotation.rotation90deg:
+        return 90;
+      case InputImageRotation.rotation180deg:
+        return 180;
       case InputImageRotation.rotation270deg:
-        result = y * scaleY;
-        break;
+        return 270;
+      case InputImageRotation.rotation0deg:
       default:
-        result = y * scaleY;
+        return 0;
     }
-    return result;
   }
 
   @override
